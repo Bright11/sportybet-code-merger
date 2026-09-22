@@ -50,7 +50,7 @@ export default function Page() {
         onChange={(e) => setInput(e.target.value)}
       />
       <button
-        className="rounded bg-black px-4 py-2 text-white disabled:opacity-50"
+        className="rounded bg-black px-4 py-2 text-white disabled:opacity-50 bg-blue-400 w-[100%] cursor-pointer"
         disabled={loading}
         onClick={() => submit()}
       >
