@@ -22,6 +22,19 @@ export interface MergeResult {
   sameEventWarnings: string[];
 }
 
+export interface VerifyResult {
+  ok: boolean;
+  submittedCount: number;
+  returnedCount: number;
+  missing: Selection[];
+  extra: Selection[];
+}
+
+export interface OverlapResolution {
+  selections: Selection[];
+  dropped: Selection[];
+}
+
 interface ClientConfig {
   country: string;
   baseUrl: string;
@@ -170,6 +183,61 @@ export function mergeSelections(
   return { selections: merged, duplicatesRemoved, conflicts, sameEventWarnings };
 }
 
+/**
+ * When an event has more than one market selected, keep only one
+ * and drop the rest. Default strategy: keep the first one encountered.
+ */
+export function resolveSameEventOverlaps(
+  selections: Selection[],
+  strategy: (candidates: Selection[]) => Selection = (candidates) => candidates[0]
+): OverlapResolution {
+  const byEvent = new Map<string, Selection[]>();
+  for (const s of selections) {
+    const bucket = byEvent.get(s.eventId) ?? [];
+    bucket.push(s);
+    byEvent.set(s.eventId, bucket);
+  }
+
+  const kept: Selection[] = [];
+  const dropped: Selection[] = [];
+
+  for (const candidates of byEvent.values()) {
+    if (candidates.length === 1) {
+      kept.push(candidates[0]);
+      continue;
+    }
+    const chosen = strategy(candidates);
+    kept.push(chosen);
+    dropped.push(...candidates.filter((c) => c !== chosen));
+  }
+
+  return { selections: kept, dropped };
+}
+
+export function diffSelections(submitted: Selection[], returned: Selection[]): VerifyResult {
+  const keyOf = (s: Selection) =>
+    `${s.eventId}|${s.marketId}|${s.specifier}|${s.outcomeId}`;
+
+  const submittedKeys = new Map(submitted.map((s) => [keyOf(s), s]));
+  const returnedKeys = new Map(returned.map((s) => [keyOf(s), s]));
+
+  const missing = [...submittedKeys.entries()]
+    .filter(([k]) => !returnedKeys.has(k))
+    .map(([, s]) => s);
+
+  const extra = [...returnedKeys.entries()]
+    .filter(([k]) => !submittedKeys.has(k))
+    .map(([, s]) => s);
+
+  return {
+    ok: missing.length === 0 && extra.length === 0,
+    submittedCount: submitted.length,
+    returnedCount: returned.length,
+    missing,
+    extra,
+  };
+}
+
 // ---------- Orchestration ----------
 export async function previewMerge(codes: string[]): Promise<MergeResult> {
   const client = new SportyBetClient();
@@ -182,11 +250,11 @@ export async function previewMerge(codes: string[]): Promise<MergeResult> {
   return mergeSelections(batches);
 }
 
-export async function createMerged(
+export async function createAndVerify(
   preview: MergeResult,
   choices: Record<string, string> // conflictKey -> chosen outcomeId
-): Promise<string> {
-  const selections = [...preview.selections];
+): Promise<{ code: string; verification: VerifyResult; overlapDropped: Selection[] }> {
+  let selections = [...preview.selections];
 
   for (const c of preview.conflicts) {
     const outcomeId = choices[conflictKey(c)];
@@ -199,10 +267,21 @@ export async function createMerged(
     });
   }
 
+  // Auto-drop extra markets on the same event so the slip prices as a straight multiple
+  const { selections: deduped, dropped: overlapDropped } = resolveSameEventOverlaps(selections);
+  selections = deduped;
+
   if (selections.length > DEFAULT_CONFIG.maxSelections) {
     throw new Error(
       `Merged slip has ${selections.length} selections; limit is ${DEFAULT_CONFIG.maxSelections}.`
     );
   }
-  return new SportyBetClient().createCode(selections);
+
+  const client = new SportyBetClient();
+  const code = await client.createCode(selections);
+
+  const returned = await client.loadCode(code);
+  const verification = diffSelections(selections, returned);
+
+  return { code, verification, overlapDropped };
 }

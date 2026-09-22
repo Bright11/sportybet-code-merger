@@ -8,13 +8,31 @@ interface Conflict {
   specifier: string;
   options: { outcomeId: string; fromCode: string }[];
 }
+
+interface DroppedSelection {
+  eventId: string;
+  marketId: string;
+  specifier: string;
+  outcomeId: string;
+}
+
+interface VerifyResult {
+  ok: boolean;
+  submittedCount: number;
+  returnedCount: number;
+  missing: DroppedSelection[];
+  extra: DroppedSelection[];
+}
+
 interface ApiResponse {
-  status: "ok" | "conflicts" | "error";
+  status: "ok" | "conflicts" | "error" | "mismatch";
   code?: string;
   message?: string;
   conflicts?: Conflict[];
   duplicatesRemoved?: number;
   sameEventWarnings?: string[];
+  verification?: VerifyResult;
+  overlapDropped?: DroppedSelection[];
 }
 
 const keyOf = (c: Conflict) => `${c.eventId}|${c.marketId}|${c.specifier}`;
@@ -50,7 +68,7 @@ export default function Page() {
         onChange={(e) => setInput(e.target.value)}
       />
       <button
-        className="rounded bg-black px-4 py-2 text-white disabled:opacity-50 bg-blue-400 w-[100%] cursor-pointer"
+        className="rounded bg-blue-400 px-4 py-2 text-white disabled:opacity-50 w-full cursor-pointer"
         disabled={loading}
         onClick={() => submit()}
       >
@@ -87,11 +105,38 @@ export default function Page() {
         </div>
       )}
 
-      {res?.status === "ok" && (
+      {res && (res.status === "ok" || res.status === "mismatch") && (
         <div className="rounded border p-3">
           <p className="text-2xl font-mono font-bold">{res.code}</p>
           <p className="text-sm">Duplicates removed: {res.duplicatesRemoved}</p>
-          {res.sameEventWarnings?.map((w) => <p key={w} className="text-sm text-amber-600">{w}</p>)}
+
+          {res.overlapDropped && res.overlapDropped.length > 0 && (
+            <div className="mt-2 rounded border border-amber-400 bg-amber-50 p-2 text-sm">
+              <p className="font-semibold text-amber-700">
+                Dropped {res.overlapDropped.length} selection(s) to avoid multiple markets on the same event:
+              </p>
+              {res.overlapDropped.map((s, i) => (
+                <p key={i}>
+                  Event {s.eventId}: market {s.marketId} {s.specifier}, outcome {s.outcomeId}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {res.status === "mismatch" && res.verification && (
+            <div className="mt-2 rounded border border-red-400 bg-red-50 p-2 text-sm">
+              <p className="font-semibold text-red-700">
+                SportyBet returned {res.verification.returnedCount} selections, you submitted{" "}
+                {res.verification.submittedCount}. Verify before placing this bet.
+              </p>
+              {res.verification.missing.map((s, i) => (
+                <p key={`m${i}`}>Dropped: event {s.eventId}, market {s.marketId} {s.specifier}</p>
+              ))}
+              {res.verification.extra.map((s, i) => (
+                <p key={`e${i}`}>Unexpected addition: event {s.eventId}, market {s.marketId} {s.specifier}</p>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </main>
